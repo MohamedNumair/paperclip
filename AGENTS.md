@@ -24,12 +24,18 @@ Before making changes, read in this order:
 
 - `server/`: Express REST API and orchestration services
 - `ui/`: React + Vite board UI
+- `cli/`: CLI package (`paperclipai` command)
 - `packages/db/`: Drizzle schema, migrations, DB clients
 - `packages/shared/`: shared types, constants, validators, API path constants
 - `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
 - `packages/adapter-utils/`: shared adapter utilities
 - `packages/plugins/`: plugin system packages
+- `skills/`: agent skills (Paperclip skill, company skills)
 - `doc/`: operational and product docs
+- `docs/`: Mintlify documentation site
+- `tests/`: end-to-end and release smoke tests
+- `scripts/`: build, dev, and release scripts
+- `docker/`: Docker configuration
 
 ## 4. Dev Setup (Auto DB)
 
