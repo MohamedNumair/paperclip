@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
-import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
+import { ensurePostgresDatabase, getPostgresDataDirectory, isTransientPostgresStartupError } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
@@ -134,6 +134,27 @@ async function ensureEmbeddedPostgresConnection(
     };
   }
 
+  async function adoptExistingEmbeddedServer(port: number): Promise<MigrationConnection | null> {
+    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+    try {
+      // During concurrent startup, the server may accept connections before responding to
+      // current_setting('data_directory'), so ensure database first and treat that as readiness.
+      await ensurePostgresDatabase(adminConnectionString, "paperclip");
+      const actualDataDir = await getPostgresDataDirectory(adminConnectionString);
+      if (typeof actualDataDir === "string") {
+        const matchesDataDir = path.resolve(actualDataDir) === path.resolve(dataDir);
+        if (!matchesDataDir) return null;
+      }
+      return {
+        connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+        source: `embedded-postgres@${port}`,
+        stop: async () => {},
+      };
+    } catch {
+      return null;
+    }
+  }
+
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
     user: "paperclip",
@@ -162,6 +183,15 @@ async function ensureEmbeddedPostgresConnection(
   try {
     await instance.start();
   } catch (error) {
+    if (isTransientPostgresStartupError(error)) {
+      const adopted = await adoptExistingEmbeddedServer(selectedPort);
+      if (adopted) {
+        process.emitWarning(
+          `Embedded PostgreSQL start raced with another process; reusing server on port ${selectedPort}.`,
+        );
+        return adopted;
+      }
+    }
     throw formatEmbeddedPostgresError(error, {
       fallbackMessage: `Failed to start embedded PostgreSQL on port ${selectedPort}`,
       recentLogs: logBuffer.getRecentLogs(),

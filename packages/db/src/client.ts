@@ -14,6 +14,36 @@ function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
 }
 
+const TRANSIENT_POSTGRES_ERROR_CODES = new Set([
+  "57P03",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+export function isTransientPostgresStartupError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+
+  const maybeCode = (error as { code?: unknown }).code;
+  if (typeof maybeCode === "string" && TRANSIENT_POSTGRES_ERROR_CODES.has(maybeCode)) {
+    return true;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("the database system is starting up") ||
+    message.includes("connection refused") ||
+    message.includes("could not connect to server") ||
+    message.includes("lock file \"postmaster.pid\" already exists")
+  );
+}
+
 function isSafeIdentifier(value: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -762,18 +792,34 @@ export async function ensurePostgresDatabase(
     throw new Error(`Unsafe database name: ${databaseName}`);
   }
 
-  const sql = createUtilitySql(url);
-  try {
-    const existing = await sql<{ one: number }[]>`
-      select 1 as one from pg_database where datname = ${databaseName} limit 1
-    `;
-    if (existing.length > 0) return "exists";
+  const maxAttempts = 30;
+  const retryDelayMs = 500;
+  let lastError: unknown;
 
-    await sql.unsafe(`create database "${databaseName}" encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
-    return "created";
-  } finally {
-    await sql.end();
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const sql = createUtilitySql(url);
+    try {
+      const existing = await sql<{ one: number }[]>`
+        select 1 as one from pg_database where datname = ${databaseName} limit 1
+      `;
+      if (existing.length > 0) return "exists";
+
+      await sql.unsafe(`create database "${databaseName}" encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
+      return "created";
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts || !isTransientPostgresStartupError(error)) {
+        throw error;
+      }
+      await sleep(retryDelayMs);
+    } finally {
+      await sql.end();
+    }
   }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Failed to ensure postgres database after retries");
 }
 
 export type Db = ReturnType<typeof createDb>;
