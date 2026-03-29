@@ -62,6 +62,12 @@ type EmbeddedPostgresCtor = new (opts: {
   onError?: (message: unknown) => void;
 }) => EmbeddedPostgresInstance;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
@@ -88,6 +94,7 @@ export async function startServer(): Promise<StartedServer> {
     | "already applied"
     | "applied (empty database)"
     | "applied (pending migrations)";
+
   
   function formatPendingMigrationSummary(migrations: string[]): string {
     if (migrations.length === 0) return "none";
@@ -335,20 +342,38 @@ export async function startServer(): Promise<StartedServer> {
       }
     };
   
+    const verifyStableEmbeddedPostgres = async (connectionString: string): Promise<void> => {
+      const actualDataDir = await getPostgresDataDirectory(connectionString);
+      if (
+        typeof actualDataDir !== "string" ||
+        resolve(actualDataDir) !== resolve(dataDir)
+      ) {
+        throw new Error("reachable postgres does not use the expected embedded data directory");
+      }
+      await ensurePostgresDatabase(connectionString, "paperclip");
+      await sleep(3000);
+      await ensurePostgresDatabase(connectionString, "paperclip");
+    };
+
+    let reusedExistingEmbeddedPostgres = false;
     const runningPid = getRunningPid();
     if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
-    } else {
+      const runningAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
+      try {
+        await verifyStableEmbeddedPostgres(runningAdminConnectionString);
+        logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+        reusedExistingEmbeddedPostgres = true;
+      } catch {
+        logger.warn(
+          `Embedded PostgreSQL pid ${runningPid} was not stable on port ${port}; starting a fresh embedded instance instead.`,
+        );
+      }
+    }
+
+    if (!reusedExistingEmbeddedPostgres) {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
-        const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
-        if (
-          typeof actualDataDir !== "string" ||
-          resolve(actualDataDir) !== resolve(dataDir)
-        ) {
-          throw new Error("reachable postgres does not use the expected embedded data directory");
-        }
-        await ensurePostgresDatabase(configuredAdminConnectionString, "paperclip");
+        await verifyStableEmbeddedPostgres(configuredAdminConnectionString);
         logger.warn(
           `Embedded PostgreSQL appears to already be reachable without a pid file; reusing existing server on configured port ${configuredPort}`,
         );

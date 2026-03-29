@@ -183,7 +183,7 @@ async function ensureEmbeddedPostgresConnection(
   try {
     await instance.start();
   } catch (error) {
-    if (isTransientPostgresStartupError(error)) {
+    if (isTransientPostgresStartupError(error) || (await isPortInUse(selectedPort))) {
       const adopted = await adoptExistingEmbeddedServer(selectedPort);
       if (adopted) {
         process.emitWarning(

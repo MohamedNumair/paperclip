@@ -10,8 +10,8 @@ function Stop-PaperclipProcesses {
   foreach ($port in $ports) {
     $listeners = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
       Select-Object -ExpandProperty OwningProcess -Unique
-    foreach ($pid in $listeners) {
-      Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+    foreach ($procId in $listeners) {
+      Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
     }
   }
 
@@ -61,6 +61,55 @@ function Wait-PaperclipHealth {
   throw "Paperclip health check failed after waiting for startup."
 }
 
+function Get-PaperclipLogPaths {
+  $logDir = Join-Path $HOME ".paperclip/instances/default/logs"
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
+  return @{
+    StdOut = Join-Path $logDir "dev-stdout.log"
+    StdErr = Join-Path $logDir "dev-stderr.log"
+  }
+}
+
+function Start-PaperclipDetached {
+  param(
+    [string]$RootPath
+  )
+
+  $logPaths = Get-PaperclipLogPaths
+  Remove-Item -Force $logPaths.StdOut -ErrorAction SilentlyContinue
+  Remove-Item -Force $logPaths.StdErr -ErrorAction SilentlyContinue
+
+  $process = Start-Process `
+    -FilePath "cmd.exe" `
+    -ArgumentList "/c", "pnpm dev" `
+    -WorkingDirectory $RootPath `
+    -RedirectStandardOutput $logPaths.StdOut `
+    -RedirectStandardError $logPaths.StdErr `
+    -PassThru
+
+  return @{
+    Process = $process
+    LogPaths = $logPaths
+  }
+}
+
+function Show-PaperclipLogs {
+  param(
+    [hashtable]$LogPaths
+  )
+
+  if (Test-Path $LogPaths.StdOut) {
+    Write-Host "[paperclip] Last stdout lines:"
+    Get-Content $LogPaths.StdOut -Tail 40 -ErrorAction SilentlyContinue
+  }
+
+  if (Test-Path $LogPaths.StdErr) {
+    Write-Host "[paperclip] Last stderr lines:"
+    Get-Content $LogPaths.StdErr -Tail 40 -ErrorAction SilentlyContinue
+  }
+}
+
 Write-Host "[paperclip] Stopping running Paperclip-related processes..."
 Stop-PaperclipProcesses
 
@@ -71,23 +120,10 @@ Write-Host "[paperclip] Starting pnpm dev..."
 $projectRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $projectRoot
 
-if ($SkipHealthCheck) {
-  pnpm dev
-  exit $LASTEXITCODE
+if (-not $SkipHealthCheck) {
+  Write-Host "[paperclip] Startup will continue in this terminal."
+  Write-Host "[paperclip] Check health at http://127.0.0.1:3100/api/health after the server banner appears."
 }
 
-$job = Start-Job -ScriptBlock {
-  param($root)
-  Set-Location $root
-  pnpm dev
-} -ArgumentList $projectRoot.Path
-
-try {
-  Wait-PaperclipHealth
-  Write-Host "[paperclip] Server started successfully. Attaching logs. Press Ctrl+C to stop."
-  Receive-Job -Job $job -Wait -AutoRemoveJob
-} catch {
-  Stop-Job -Job $job -Force -ErrorAction SilentlyContinue
-  Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-  throw
-}
+pnpm dev
+exit $LASTEXITCODE
