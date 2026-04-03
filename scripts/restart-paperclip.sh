@@ -88,8 +88,8 @@ cd "$(dirname "$0")/.."
 if [ "$SKIP_HEALTH_CHECK" = false ]; then
     echo "[paperclip] Startup will continue in this terminal."
     echo "[paperclip] Check health at http://127.0.0.1:3100/api/health after the server banner appears."
-    (pnpm dev)
+    (set -a; source .env; set +a; pnpm dev)
     wait_for_health_check
 else
-    pnpm dev
+    set -a; source .env; set +a; pnpm dev
 fi
