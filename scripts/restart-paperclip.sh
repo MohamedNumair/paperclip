@@ -21,6 +21,37 @@ done
 
 set -e
 
+ensure_postgres_running() {
+    if pg_isready -h localhost -p 5432 -q; then
+        echo "[paperclip] Local PostgreSQL is already running."
+        return 0
+    fi
+
+    echo "[paperclip] PostgreSQL not running, attempting to start..."
+    if command -v brew &>/dev/null; then
+        brew services start postgresql
+    elif command -v systemctl &>/dev/null; then
+        sudo systemctl start postgresql
+    elif command -v service &>/dev/null; then
+        sudo service postgresql start
+    else
+        echo "[paperclip] ERROR: Cannot start PostgreSQL automatically. Please start it manually." >&2
+        exit 1
+    fi
+
+    # Wait up to 15 seconds for Postgres to become ready
+    for i in $(seq 1 15); do
+        if pg_isready -h localhost -p 5432 -q; then
+            echo "[paperclip] PostgreSQL is now ready."
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "[paperclip] ERROR: PostgreSQL did not become ready in time." >&2
+    exit 1
+}
+
 stop_paperclip_processes() {
     echo "[paperclip] Stopping running Paperclip-related processes..."
     PORTS=(3100 13100 54329)
@@ -79,6 +110,7 @@ wait_for_health_check() {
 
 # --- Main Script ---
 
+ensure_postgres_running
 stop_paperclip_processes
 reset_paperclip_db_lock
 
